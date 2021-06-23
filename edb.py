@@ -10,6 +10,7 @@ instruction_table = {}
 w3 = Web3(Web3.HTTPProvider("http://127.0.0.1:7545"))
 
 ZERODATA = '0' * 64
+MAX_SIZE = 16
 
 
 class C:
@@ -32,6 +33,13 @@ def init_instruction_table():
             name = name + str(ins.operand)
         assert name not in instruction_table
         instruction_table[name] = ins
+
+
+def short_stack(stack):
+    ret = []
+    for v in stack:
+        ret.append(hex(int(v, 16)))
+    return ret
 
 
 class Ins():
@@ -110,13 +118,17 @@ class Memory():
 
     def show(self):
         print("Memory:")
-        l = min(16, len(self._mem))
+        l = min(MAX_SIZE, len(self._mem))
         keys = sorted(self._mem.keys())
         padding = len(hex(keys[-1])[2:]) if keys else 4
         for i in range(l):
             k = keys[i]
             print(f"  0x{hex(k)[2:].zfill(padding)}: ", end='')
             print(f"  {C.HEADER}{self._mem[k]}{C.ENDC}")
+        if len(self._mem) > MAX_SIZE:
+            print(f"  ...")
+        if not self._mem:
+            print(f"  (empty)")
         print()
 
 
@@ -127,15 +139,23 @@ class Breakpoint():
         self.conditions = []
         for c in conditions:
             c = c.strip().replace(' ', '')
-            if c.startswith('op=='):
+            c = c.replace('=', '==').replace('====', '==')  # 防止意外赋值
+            if c.startswith('op'):
                 # e.g. op==sha3
                 op = c.split('=')[-1].upper()
                 self.conditions.append(f"self.op == '{op}'")
-            elif c.startswith("s["):
-                # e.g. s[-1] == 0x123
+            elif c.startswith("sta["):
+                # e.g. sta[-1] == 0x123
                 left, right = c.split(']')
                 offset = left.split('[')[-1]
                 self.conditions.append(f"int(self.stack[{offset}],16){right}")
+            elif c.startswith("sto["):
+                # e.g. sto[0x1] == 0x123
+                left, right = c.split(']')
+                offset = left.split('[')[-1]
+                offset = hex(eval(offset))[2:].zfill(64)
+                self.conditions.append(
+                    f"int(self.storage['{offset}'],16){right}")
             else:
                 print(f"[w] Cannot parse condition: {c}")
 
@@ -144,13 +164,20 @@ class Breakpoint():
             print(f"  {c}")
 
 
+class Jump():
+    def __init__(self, cur, src_ins, dst_ins, stack: list) -> None:
+        self.src_cur = cur
+        self.dst_cur = cur + 1
+        self.src_ins = src_ins
+        self.dst_ins = dst_ins
+        self.stack = stack
+
+    def __str__(self) -> str:
+        pass
+
+
 class Step():
-    def __init__(self, log, contract: BytecodeContract, calldata: str, last_step=None) -> None:
-        if last_step:
-            self.memory = last_step.memory.copy()
-            self.update_memory(contract, calldata, last_step)
-        else:
-            self.memory = Memory()
+    def __init__(self, cur: int, log, contract: BytecodeContract, calldata: str, last_step=None) -> None:
         self.pc = log["pc"]
         self.depth = log['depth']
         self.gas = log['gas']
@@ -159,10 +186,41 @@ class Step():
         self.stack = log['stack']
         self.op = log['op']
         self.log = log
-
+        self.cur = cur
         self.ins: Ins = contract.ins_at(self.pc)
+
+        if last_step:
+            self.memory = last_step.memory.copy()
+            self.update_memory(contract, calldata, last_step)
+            self.jumps = copy.copy(last_step.jumps)
+            self.update_jump(last_step)
+        else:
+            self.memory = Memory()
+            self.jumps = []
         assert self.op in self.ins.opcode, f"{self.ins} {self.op} {self.pc}"
-        # self.update_memory(contract, calldata)
+
+    def print_jump(self):
+        print("Jump:\n", end='')
+        for j in self.jumps:
+            print(
+                f"  from: {j.src_cur} pc = {j.src_ins.addr} = {hex(j.src_ins.addr)}  ->", end='')
+            print(
+                f"  to: {j.dst_cur} pc = {j.dst_ins.addr} = {hex(j.dst_ins.addr)}", end='')
+            print(f"  {C.OKCYAN}{j.src_ins.short_str()}{C.ENDC}", end='')
+            print(f"  stack: [{', '.join(short_stack(j.stack))}]")
+        print()
+
+    def update_jump(self, last):
+        if last.op == 'JUMP':
+            pass
+        elif last.op == 'JUMPI':
+            dst = int(last.stack[-1], 16)
+            if dst != self.pc:
+                return
+        else:
+            return
+        jump = Jump(last.cur, last.ins, self.ins, last.stack)
+        self.jumps.append(jump)
 
     def update_memory(self, contract: BytecodeContract, calldata: str, last):
         if last.op == 'MSTORE':
@@ -197,7 +255,11 @@ class Step():
 
     def match(self, bp: Breakpoint) -> bool:
         for c in bp.conditions:
-            flag = eval(c)
+            try:
+                flag = eval(c)
+            except:
+                # 有可能offset不在其中
+                flag = False
             if not flag:
                 return False
         return True
@@ -243,15 +305,22 @@ class DebugVM(cmd.Cmd):
         trace = trace['result']['structLogs']
         print(f"[i] Loaded {len(trace)} steps")
         last_step = None
+        cur = 0
         for s in trace:
-            step = Step(s, self.contract, self.calldata, last_step)
+            step = Step(cur, s, self.contract, self.calldata, last_step)
             self.steps.append(step)
             last_step = step
+            cur += 1
 
     def start(self):
         print(self.real_intro)
         self.info()
-        self.cmdloop()
+        while True:
+            try:
+                self.cmdloop()
+                break
+            except KeyboardInterrupt:
+                break
 
     def check_cur(self):
         self.cur = min(self.total-1, self.cur)
@@ -269,8 +338,10 @@ class DebugVM(cmd.Cmd):
 
     def _run(self, delta):
         broken = False
-        while 0 <= self.cur < self.total:
+        while True:
             self.cur += delta
+            if not 0 <= self.cur < self.total:
+                break
             bcnt = 0
             for b in self.breakpoints:
                 if self.steps[self.cur].match(b):
@@ -295,8 +366,13 @@ class DebugVM(cmd.Cmd):
         self._run(1)
 
     def do_b(self, args):
-        """b [exp]: Add breakpoint with exp or show breakpoints
-        e.g b op==sha3;s[-2]==0x100
+        """
+        b [exp]: Add breakpoint with exp or show breakpoints
+            e.g b op==sha3;sta[-2]==0x100
+            可用条件如下：
+                op: 操作码
+                sta[xx]: 栈元素
+                sto[xx]: storage元素
         """
         print()
         if not args.strip():
@@ -342,6 +418,10 @@ class DebugVM(cmd.Cmd):
         "Quit"
         return True
 
+    def do_j(self, args):
+        "j: Print jump info"
+        self.print_jump()
+
     def print_stack(self):
         stack = self.steps[self.cur].stack
         print("Stack:")
@@ -360,9 +440,27 @@ class DebugVM(cmd.Cmd):
         print(f"  PC = {ins.addr} = {hex(ins.addr)}")
         print()
 
+    def print_storage(self):
+        storage = self.steps[self.cur].storage
+        print("Storage:")
+        l = min(len(storage), MAX_SIZE)
+        keys = sorted([int(x, 16) for x in storage.keys()])
+        for i in range(l):
+            k = hex(keys[i])[2:].zfill(64)
+            print(f"  {k}: ", end='')
+            print(f"  {C.OKBLUE}{storage[k]}{C.ENDC}")
+        if len(storage) > MAX_SIZE:
+            print(f"  ...")
+        if not storage:
+            print("  (empty)")
+        print()
+
     def print_memory(self):
         memory: Memory = self.steps[self.cur].memory
         memory.show()
+
+    def print_jump(self):
+        self.steps[self.cur].print_jump()
 
     @property
     def prompt(self):
@@ -371,7 +469,9 @@ class DebugVM(cmd.Cmd):
     def info(self):
         print()
         self.print_memory()
+        self.print_storage()
         self.print_stack()
+        # self.print_jump()
         self.print_pc()
 
 
