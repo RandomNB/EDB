@@ -156,6 +156,8 @@ class Breakpoint():
                 offset = hex(eval(offset))[2:].zfill(64)
                 self.conditions.append(
                     f"int(self.storage['{offset}'],16){right}")
+            elif c.startswith("pc"):
+                self.conditions.append(f"self.{c}")
             else:
                 print(f"[w] Cannot parse condition: {c}")
 
@@ -373,6 +375,7 @@ class DebugVM(cmd.Cmd):
                 op: 操作码
                 sta[xx]: 栈元素
                 sto[xx]: storage元素
+                pc: pc
         """
         print()
         if not args.strip():
