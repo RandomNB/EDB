@@ -75,7 +75,14 @@ class Step():
             data = calldata[(offset)*2:(offset+length)*2].ljust(length*2, '0')
             self.memory.set(destoffset, length, data)
         elif last.op == 'CODECOPY':
-            raise Exception("CODECOPY Not Implemented")
+            assert len(
+                last.stack) >= 3, f"{last.op} Stack under flow: {last.stack}"
+            destoffset = int(last.stack[-1], 16)
+            offset = int(last.stack[-2], 16)
+            length = int(last.stack[-3], 16)
+            data = contract.bytecode[(
+                offset)*2:(offset+length)*2].ljust(length*2, '0')
+            self.memory.set(destoffset, length, data)
         elif last.op == 'EXTCODECOPY':
             raise Exception("EXTCODECOPY Not Implemented")
         elif last.op == 'RETURNDATACOPY':

@@ -2,17 +2,10 @@
 from components import *
 
 
-
-
-
-def debug(txhash):
-    vm = DebugVM(txhash)
-    vm.start()
-
-
 def main():
     txhash = sys.argv[1]
-    debug(txhash)
+    vm = DebugVM(txhash)
+    vm.start()
 
 
 if __name__ == '__main__':

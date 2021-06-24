@@ -3,6 +3,8 @@ import sys
 import math
 import os
 import copy
+import rlp
+from sha3 import keccak_256
 from web3 import Web3
 from eth_utils import remove_0x_prefix
 from pyevmasm import instruction_tables
@@ -48,6 +50,12 @@ def parse(arg):
         return tuple(map(int, arg.split()))
     except:
         return []
+
+
+def create_addr(creator: str, nonce: int):
+    return keccak_256(rlp.encode(
+        [bytes.fromhex(remove_0x_prefix(creator)), nonce])
+    ).hexdigest()[-40:]
 
 
 w3 = Web3(Web3.HTTPProvider(ENDPOINT_URI))

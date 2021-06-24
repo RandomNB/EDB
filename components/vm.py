@@ -141,6 +141,26 @@ class DebugVM(cmd.Cmd):
         else:
             print(f"[x] Unkown {args} to print")
 
+    def do_x(self, args):
+        "x mem[a:b]|sto[k]|sta[k]: Print memory or storage or stack value at specified position"
+        args = args.strip()
+        if args.startswith('mem'):
+            l, r = map(eval, args.split('[')[-1].strip(']').split(':'))
+            print(self.steps[self.cur].memory.get(l, r-l))
+        elif args.startswith('sto'):
+            k = eval(args.split('[')[-1].strip(']'))
+            k = hex(k)[2:].zfill(64)
+            record = self.steps[self.cur].storage.get(k, None)
+            if not record:
+                print("No record, loading origin data from chain")
+                record = self.get_old_storage(self.contract.addr, k)
+            print(record)
+        elif args.startswith('sta'):
+            k = eval(args.split('[')[-1].strip(']'))
+            print(self.steps[self.cur].stack[k])
+        else:
+            print(f"[x] Unkown {args} to exp")
+
     def do_db(self, args):
         "db [k]: Delete breakpoint #k"
         print()
@@ -200,6 +220,9 @@ class DebugVM(cmd.Cmd):
         if not stack:
             print("  (empty)")
         print()
+
+    def get_old_storage(self, addr, offset):
+        return w3.eth.get_storage_at(addr, offset, block_identifier=self.block_number).hex()
 
     def print_pc(self):
         ins: Ins = self.steps[self.cur].ins
