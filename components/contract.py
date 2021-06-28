@@ -18,6 +18,7 @@ class BytecodeContract():
 
         self.addr = addr
         self.bytecode = bytecode
+        self.codehash = w3.sha3(hexstr=bytecode)  # 用codehash映射到contract
 
     def ins_at(self, pc) -> Ins:
         return self.pc2ins[pc]
